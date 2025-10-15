@@ -221,6 +221,8 @@ export function createPlane(THREE: any) {
       const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, w, 10), wheelMat);
       m.rotation.z = Math.PI / 2; m.castShadow = true; return m;
   };
+  const strut = (len = .28, t = .04) => { const m = new THREE.Mesh(new THREE.BoxGeometry(t, len, t), strutMat); m.castShadow = true; return m; };
+  const noseStrut = strut(.32, .04); noseStrut.position.set(0, -.05, -.52); noseStrut.rotation.x = Math.PI * .16; p.add(noseStrut);
   const noseWheel = wheel(.08, .045); noseWheel.position.set(0, -.23, -.60); p.add(noseWheel);
   const ml = wheel(); ml.position.set(-.35, -.20, .42); p.add(ml);
   const mr = wheel(); mr.position.set(.35, -.20, .42); p.add(mr);

@@ -48,7 +48,7 @@ export const useFlightSimulator = (
   const requestAutoLand = useCallback(() => {
     const { isGrounded, autoLanding } = stateRef.current;
     const { playerPlane, airportLocation } = threeRef.current;
-    if (!playerPlane) return;
+    if (!playerPlane || !airportLocation) return;
     
     const dist = playerPlane.position.distanceTo(new (window as any).THREE.Vector3(airportLocation.x, playerPlane.position.y, airportLocation.z));
     const altitude = playerPlane.position.y - RUNWAY_TOP_Y;
@@ -68,6 +68,11 @@ export const useFlightSimulator = (
   useEffect(() => {
     const THREE = (window as any).THREE as typeof import('three');
     if (!mountRef.current || !THREE) return;
+
+    if (!stateRef.current.velocity) {
+      stateRef.current.velocity = new THREE.Vector3(0, 0, 0);
+      stateRef.current.rotation = new THREE.Euler(0, 0, 0);
+    }
 
     const { scene, camera, renderer, sun, dir } = createScene();
     mountRef.current.appendChild(renderer.domElement);
@@ -105,9 +110,9 @@ export const useFlightSimulator = (
       const { cameraViews } = threeRef.current;
       if (!cameraViews) return;
 
-      if (e.deltaY < 0) { // wheel up/forward
+      if (e.deltaY < 0) {
           threeRef.current.currentCameraViewIndex = (threeRef.current.currentCameraViewIndex + 1) % cameraViews.length;
-      } else { // wheel down/backward
+      } else {
           threeRef.current.currentCameraViewIndex = (threeRef.current.currentCameraViewIndex - 1 + cameraViews.length) % cameraViews.length;
       }
     };
@@ -122,6 +127,7 @@ export const useFlightSimulator = (
 
     const animate = () => {
       const { scene, camera, renderer, sun, dir, playerPlane, mainAirport, airportLocation, chunks, chunkObjects } = threeRef.current;
+      if(!scene) return;
       const state = stateRef.current;
       
       const t = Date.now() * 0.0003;
@@ -200,16 +206,9 @@ export const useFlightSimulator = (
 
       let camOffset;
       switch (currentView) {
-          case 'left':
-              camOffset = new THREE.Vector3(-5, 1, -2);
-              break;
-          case 'right':
-              camOffset = new THREE.Vector3(5, 1, -2);
-              break;
-          case 'rear':
-          default:
-              camOffset = new THREE.Vector3(0, 3, 10);
-              break;
+          case 'left': camOffset = new THREE.Vector3(-5, 1, -2); break;
+          case 'right': camOffset = new THREE.Vector3(5, 1, -2); break;
+          case 'rear': default: camOffset = new THREE.Vector3(0, 3, 10); break;
       }
 
       const camPos = camOffset.clone().applyQuaternion(playerPlane.quaternion);
@@ -221,7 +220,11 @@ export const useFlightSimulator = (
       const dirPlusZ = new THREE.Vector2(0, 1), dirMinusZ = new THREE.Vector2(0, -1);
       const landingDir2 = (toRunway.dot(dirPlusZ) >= toRunway.dot(dirMinusZ)) ? dirPlusZ : dirMinusZ;
       const landingDir3 = new THREE.Vector3(0, 0, landingDir2.y);
-      const approachPoint = new THREE.Vector3(runwayCenter.x, RUNWAY_TOP_Y + 1.8, runwayCenter.z).add(landingDir3.clone().multiplyScalar(-45));
+      
+      // Define key points for landing path
+      const approachPoint = new THREE.Vector3(runwayCenter.x, runwayCenter.y + 10, runwayCenter.z).add(landingDir3.clone().multiplyScalar(-50));
+      const touchdownPoint = new THREE.Vector3(runwayCenter.x, runwayCenter.y, runwayCenter.z).add(landingDir3.clone().multiplyScalar(-mainAirport.userData.runwayLen / 2 + 5));
+
 
       if (!state.autoLanding && state.manualAutoLandRequested) {
         state.autoLanding = true; state.autoPhase = 'intercept'; state.phaseTimer = 0; state.manualAutoLandRequested = false;
@@ -229,7 +232,6 @@ export const useFlightSimulator = (
       }
       
       if(state.autoLanding) {
-        // Autoland logic here, adapted from original script
         const desiredYaw = (landingDir2.y > 0) ? Math.PI : 0;
 
         if (state.autoPhase !== 'rollout' && state.autoPhase !== 'turnaround' && state.autoPhase !== 'hold' && state.autoPhase !== 'done') {
@@ -247,33 +249,51 @@ export const useFlightSimulator = (
                 const dirV = new THREE.Vector3().subVectors(approachPoint, playerPlane.position);
                 const d = dirV.length();
                 if (d > 0.001) dirV.normalize();
-                state.speed = Math.max(0.14, state.speed - 0.0010);
-                playerPlane.position.add(dirV.multiplyScalar(Math.min(d, 0.11)));
-                playerPlane.position.y += (approachPoint.y - playerPlane.position.y) * 0.04;
-                playerPlane.position.x += (airportLocation.x - playerPlane.position.x) * 0.045;
-                if (d < 1.2) { state.autoPhase = 'glideslope'; state.phaseTimer = 0; }
+                
+                state.speed = Math.max(0.2, state.speed - 0.0010);
+                
+                const approachSpeed = 0.25;
+                playerPlane.position.add(dirV.multiplyScalar(Math.min(d, approachSpeed)));
+
+                if (d < 1.5) { state.autoPhase = 'glideslope'; state.phaseTimer = 0; }
                 break;
             }
             case 'glideslope': {
-                state.speed = Math.max(0.12, state.speed - 0.0010);
-                playerPlane.position.add(landingDir3.clone().multiplyScalar(0.095));
+                state.speed = Math.max(0.12, state.speed - 0.0012);
+                playerPlane.position.add(landingDir3.clone().multiplyScalar(state.speed));
                 playerPlane.position.x += (airportLocation.x - playerPlane.position.x) * 0.035;
-                const targetY = RUNWAY_TOP_Y + PLANE_CLEARANCE + 0.25;
-                playerPlane.position.y += (targetY - playerPlane.position.y) * 0.035;
-                state.phaseTimer++;
-                const zRel = (playerPlane.position.z - airportLocation.z) * landingDir2.y;
-                if (state.phaseTimer > 6 * 60 || zRel > (mainAirport.userData.runwayLen / 2 - 6)) {
-                    state.autoPhase = 'flare'; state.phaseTimer = 0;
+
+                // *** FUNDAMENTAL FIX START ***
+                // Calculate the total path and current progress for the descent.
+                const totalGlidePath = new THREE.Vector3().subVectors(approachPoint, touchdownPoint);
+                const currentPath = new THREE.Vector3().subVectors(playerPlane.position, touchdownPoint);
+                
+                // Project current position onto the glide path vector to get progress.
+                const progress = 1 - (currentPath.dot(totalGlidePath) / totalGlidePath.lengthSq());
+                const clampedProgress = Math.max(0, Math.min(1, progress));
+
+                // Lerp the altitude based on progress along the path.
+                const correctAltitude = THREE.MathUtils.lerp(approachPoint.y, touchdownPoint.y, clampedProgress);
+                playerPlane.position.y = correctAltitude;
+                // *** FUNDAMENTAL FIX END ***
+
+                const distToTouchdown = playerPlane.position.distanceTo(touchdownPoint);
+                if (distToTouchdown < 1) {
+                    state.autoPhase = 'flare';
+                    state.phaseTimer = 0;
                     state.lockedYaw = desiredYaw;
                 }
                 break;
             }
             case 'flare': {
                 const targetY = RUNWAY_TOP_Y + PLANE_CLEARANCE;
-                state.speed = Math.max(0.10, state.speed - 0.001);
+                state.speed = Math.max(0.08, state.speed - 0.0015);
+                
+                playerPlane.position.add(landingDir3.clone().multiplyScalar(state.speed));
                 playerPlane.position.y += (targetY - playerPlane.position.y) * 0.10;
                 playerPlane.position.x += (airportLocation.x - playerPlane.position.x) * 0.025;
-                if (Math.abs(playerPlane.position.y - targetY) < 0.01) {
+
+                if (playerPlane.position.y <= targetY + 0.02) {
                     playerPlane.position.y = targetY;
                     state.isGrounded = true;
                     state.autoPhase = 'rollout';
@@ -284,14 +304,14 @@ export const useFlightSimulator = (
             }
             case 'rollout': {
                 if (state.lockedYaw != null) playerPlane.rotation.y = state.lockedYaw;
-                const brk = Math.max(0.04, 0.10 - state.phaseTimer * 0.0012);
+                const brk = Math.max(0, 0.10 - state.phaseTimer * 0.0012);
                 playerPlane.position.add(landingDir3.clone().multiplyScalar(brk));
-                state.speed = Math.max(0, brk);
+                state.speed = brk;
                 playerPlane.position.y = RUNWAY_TOP_Y + PLANE_CLEARANCE;
                 playerPlane.position.x += (airportLocation.x - playerPlane.position.x) * 0.04;
                 state.phaseTimer++;
                 const endRel = (playerPlane.position.z - airportLocation.z) * landingDir2.y;
-                if (endRel >= (mainAirport.userData.runwayLen / 2 - 2) || state.phaseTimer > 7 * 60) {
+                if (endRel >= (mainAirport.userData.runwayLen / 2 - 2) || state.speed <= 0.01) {
                     state.autoPhase = 'turnaround';
                     state.phaseTimer = 0;
                 }
@@ -302,7 +322,7 @@ export const useFlightSimulator = (
                 const yawErr = ((targetYaw - playerPlane.rotation.y + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
                 playerPlane.rotation.y += Math.sign(yawErr) * Math.min(Math.abs(yawErr), 0.06);
                 playerPlane.position.y = RUNWAY_TOP_Y + PLANE_CLEARANCE;
-                playerPlane.position.add(landingDir3.clone().multiplyScalar(0.015));
+                
                 if (Math.abs(yawErr) < 0.02 || state.phaseTimer > 3 * 60) {
                     state.autoPhase = 'hold';
                     state.phaseTimer = 0;
@@ -361,7 +381,7 @@ export const useFlightSimulator = (
           rotation: Math.atan2(dx, dz) - playerPlane.rotation.y + Math.PI,
           distance: (Math.hypot(dx, dz) / 10).toFixed(1) + 'km',
         },
-        message: { text: '', visible: false }, // Will be overwritten by showMessage
+        message: { text: '', visible: false },
         autoland: state.autoLanding,
       };
       
@@ -382,7 +402,6 @@ export const useFlightSimulator = (
       if (mountRef.current && renderer.domElement) {
         mountRef.current.removeChild(renderer.domElement);
       }
-      // You would also dispose of Three.js geometries, materials, etc. here for a production app
     };
   }, [mountRef, onStateUpdate, requestAutoLand, showMessage]);
 
