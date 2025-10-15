@@ -1,0 +1,5 @@
+{
+  "name": "React Three.js Flight Simulator",
+  "description": "An infinite low-poly world flight simulator built with React and Three.js. Features terrain generation, collision detection, and an autopilot landing system.",
+  "requestFramePermissions": []
+}
