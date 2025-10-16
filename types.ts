@@ -1,4 +1,3 @@
-
 import type * as THREE from 'three';
 
 // FIX: Changed y to z to correctly represent a 2D vector on the XZ plane for world coordinates.
@@ -8,8 +7,8 @@ export interface Vector2D {
 }
 
 export interface PlaneState {
-  velocity: THREE.Vector3;
-  rotation: THREE.Euler;
+  velocity: THREE.Vector3 | null;
+  rotation: THREE.Euler | null;
   speed: number;
   minSpeed: number;
   maxSpeed: number;
@@ -57,6 +56,6 @@ export interface InputState {
 
 export interface ChunkObjects {
   waterMeshes: THREE.Mesh[];
-  trees: THREE.Group[];
+  treeIndices: number[];
   house: THREE.Group | null;
 }

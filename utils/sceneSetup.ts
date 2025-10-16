@@ -1,15 +1,16 @@
-import type { ChunkObjects, Vector2D } from '../types';
-import { getTerrainHeight, isWater, fbm, seededRandom, isOverRunwayXZ } from './terrain';
 
-const CHUNK_SIZE = 20, SEGMENTS = 20, RENDER_DISTANCE = 3;
+import type { ChunkObjects, Vector2D } from '../types';
+import { getTerrainHeight, isWater, fbm, seededRandom, isOverRunwayXZ, AIRPORT_HEIGHT } from './terrain';
+
+const CHUNK_SIZE = 20, SEGMENTS = 20, RENDER_DISTANCE = 15;
 const AIRPORT_FLATTEN_RADIUS = 25;
-const AIRPORT_HEIGHT = 2.5;
+const MAX_TREES = 15000;
 
 export function createScene() {
   const THREE = (window as any).THREE;
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x87ceeb);
-  scene.fog = new THREE.Fog(0x87ceeb, 20, 90);
+  scene.fog = new THREE.Fog(0x87ceeb, 150, 250);
 
   const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1000);
   camera.position.set(0, 8, 15);
@@ -23,26 +24,38 @@ export function createScene() {
   const dir = new THREE.DirectionalLight(0xffffff, 1);
   dir.position.set(5, 8, 5);
   dir.castShadow = true;
+  dir.shadow.mapSize.width = 2048;
+  dir.shadow.mapSize.height = 2048;
+  dir.shadow.camera.left = -80;
+  dir.shadow.camera.right = 80;
+  dir.shadow.camera.top = 80;
+  dir.shadow.camera.bottom = -80;
+  dir.shadow.camera.near = 0.5;
+  dir.shadow.camera.far = 500;
   scene.add(dir);
-  const sun = new THREE.Mesh(new THREE.SphereGeometry(0.5, 8, 8), new THREE.MeshBasicMaterial({ color: 0xffeb3b }));
+  
+  const sun = new THREE.Mesh(new THREE.SphereGeometry(5, 32, 32), new THREE.MeshBasicMaterial({ color: 0xffeb3b }));
   sun.position.set(5, 8, 5);
   scene.add(sun);
   
-  return { scene, camera, renderer, sun, dir };
-}
+  const moon = new THREE.Mesh(new THREE.SphereGeometry(4, 32, 32), new THREE.MeshBasicMaterial({ color: 0xe0e0e0 }));
+  scene.add(moon);
 
-function createTree(x: number, z: number, airportLocation: Vector2D, THREE: any) {
-  const g = new THREE.Group();
-  const h = getTerrainHeight(x, z, airportLocation);
-  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(.15, .15, 1, 6), new THREE.MeshStandardMaterial({ color: 0x795548, flatShading: true }));
-  trunk.position.set(x, h + .5, z);
-  trunk.castShadow = true;
-  g.add(trunk);
-  const fol = new THREE.Mesh(new THREE.ConeGeometry(.8, 1.5, 6), new THREE.MeshStandardMaterial({ color: 0x2e7d32, flatShading: true }));
-  fol.position.set(x, h + 1.5, z);
-  fol.castShadow = true;
-  g.add(fol);
-  return g;
+  // Instanced rendering for trees
+  const trunkGeo = new THREE.CylinderGeometry(.15, .15, 1, 6);
+  const foliageGeo = new THREE.ConeGeometry(.8, 1.5, 6);
+  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x795548, flatShading: true });
+  const foliageMat = new THREE.MeshStandardMaterial({ color: 0x2e7d32, flatShading: true });
+
+  const instancedTreeTrunks = new THREE.InstancedMesh(trunkGeo, trunkMat, MAX_TREES);
+  const instancedTreeFoliage = new THREE.InstancedMesh(foliageGeo, foliageMat, MAX_TREES);
+  instancedTreeTrunks.castShadow = true;
+  instancedTreeFoliage.castShadow = true;
+  scene.add(instancedTreeTrunks, instancedTreeFoliage);
+  
+  const freeTreeIndices = Array.from({ length: MAX_TREES }, (_, i) => i).reverse();
+
+  return { scene, camera, renderer, sun, dir, ambient, moon, instancedTreeTrunks, instancedTreeFoliage, freeTreeIndices };
 }
 
 function createHouse(x: number, z: number, airportLocation: Vector2D, THREE: any) {
@@ -58,11 +71,13 @@ function createHouse(x: number, z: number, airportLocation: Vector2D, THREE: any
   h.add(roof);
   const door = new THREE.Mesh(new THREE.BoxGeometry(.4, .6, .05), new THREE.MeshStandardMaterial({ color: 0x5d4037 }));
   door.position.set(x, y + .3, z + .76);
+  door.castShadow = true;
   h.add(door);
   return h;
 }
 
-function createChunk(cx: number, cz: number, chunks: Map<string, any>, chunkObjects: Map<string, ChunkObjects>, scene: any, airportLocation: Vector2D, runwayLen: number, THREE: any) {
+function createChunk(cx: number, cz: number, threeState: any, scene: any, airportLocation: Vector2D, runwayLen: number, THREE: any) {
+    const { chunks, chunkObjects, instancedTreeTrunks, instancedTreeFoliage, freeTreeIndices } = threeState;
     const key = `${cx},${cz}`;
     if (chunks.has(key)) return;
 
@@ -75,13 +90,45 @@ function createChunk(cx: number, cz: number, chunks: Map<string, any>, chunkObje
             const wx = cx * CHUNK_SIZE + x * step, wz = cz * CHUNK_SIZE + z * step;
             const h = getTerrainHeight(wx, wz, airportLocation);
             vertices.push(wx, h, wz);
+            
             const col = new THREE.Color();
-            if (isWater(wx, wz, airportLocation)) col.setHex(0x4fc3f7);
-            else if (h < 1) col.setHex(0x9e9d24);
-            else if (h < 2) col.setHex(0x7cb342);
-            else if (h < 3.5) col.setHex(0x8bc34a);
-            else if (h < 5) col.setHex(0x9ccc65);
-            else col.setHex(0xaed581);
+            const onRunway = isOverRunwayXZ(wx, wz, airportLocation, runwayLen);
+
+            const isMarking = (() => {
+                if (!onRunway) return false;
+                const localZ = wz - airportLocation.z;
+                const halfMarkingWidth = 0.25;
+                const halfMarkingLength = 1.0;
+                
+                if (Math.abs(wx - airportLocation.x) > halfMarkingWidth) return false;
+
+                const startZ = -Math.floor((runwayLen / 2) - 3);
+                const endZ = Math.floor((runwayLen / 2) - 3);
+                for (let i = startZ; i <= endZ; i += 4) {
+                    if (localZ >= i - halfMarkingLength && localZ <= i + halfMarkingLength) {
+                        return true;
+                    }
+                }
+                return false;
+            })();
+
+            if (isMarking) {
+                col.setHex(0xe0e0e0);
+            } else if (onRunway) {
+                col.setHex(0x424242);
+            } else if (isWater(wx, wz, airportLocation)) {
+                col.setHex(0x4fc3f7);
+            } else if (h < 1) {
+                col.setHex(0x9e9d24);
+            } else if (h < 2) {
+                col.setHex(0x7cb342);
+            } else if (h < 3.5) {
+                col.setHex(0x8bc34a);
+            } else if (h < 5) {
+                col.setHex(0x9ccc65);
+            } else {
+                col.setHex(0xaed581);
+            }
             colors.push(col.r, col.g, col.b);
         }
     }
@@ -102,7 +149,7 @@ function createChunk(cx: number, cz: number, chunks: Map<string, any>, chunkObje
     chunks.set(key, mesh);
 
     const waterMeshes: any[] = [];
-    const trees: any[] = [];
+    const treeIndices: number[] = [];
     let house = null;
 
     for (let i = 0; i < 3; i++) {
@@ -122,16 +169,26 @@ function createChunk(cx: number, cz: number, chunks: Map<string, any>, chunkObje
     }
     
     const treeCount = Math.floor(seededRandom(cx, cz, 200) * 6) + 3;
+    const dummy = new THREE.Object3D();
     for (let i = 0; i < treeCount; i++) {
         const tx = cx * CHUNK_SIZE + seededRandom(cx, cz, i + 300) * CHUNK_SIZE;
         const tz = cz * CHUNK_SIZE + seededRandom(cx, cz, i + 400) * CHUNK_SIZE;
-        
         const onRunway = isOverRunwayXZ(tx, tz, airportLocation, runwayLen);
 
         if (!isWater(tx, tz, airportLocation) && getTerrainHeight(tx, tz, airportLocation) > 1 && !onRunway) {
-            const tree = createTree(tx, tz, airportLocation, THREE);
-            scene.add(tree);
-            trees.push(tree);
+            const index = freeTreeIndices.pop();
+            if (index === undefined) continue;
+
+            treeIndices.push(index);
+            const h = getTerrainHeight(tx, tz, airportLocation);
+            
+            dummy.position.set(tx, h + 0.5, tz);
+            dummy.updateMatrix();
+            instancedTreeTrunks.setMatrixAt(index, dummy.matrix);
+
+            dummy.position.set(tx, h + 1.5, tz);
+            dummy.updateMatrix();
+            instancedTreeFoliage.setMatrixAt(index, dummy.matrix);
         }
     }
 
@@ -143,28 +200,40 @@ function createChunk(cx: number, cz: number, chunks: Map<string, any>, chunkObje
         }
     }
     
-    chunkObjects.set(key, { waterMeshes, trees, house });
+    chunkObjects.set(key, { waterMeshes, treeIndices, house });
 }
 
-function removeChunk(cx: number, cz: number, chunks: Map<string, any>, chunkObjects: Map<string, any>, scene: any) {
+// FIX: Added THREE as a parameter to provide access to THREE.Object3D.
+function removeChunk(cx: number, cz: number, threeState: any, scene: any, THREE: any) {
+    const { chunks, chunkObjects, instancedTreeTrunks, instancedTreeFoliage, freeTreeIndices } = threeState;
     const key = `${cx},${cz}`;
     const mesh = chunks.get(key);
     if (mesh) {
         scene.remove(mesh);
         mesh.geometry.dispose();
-        mesh.material.dispose();
+        if(mesh.material.dispose) mesh.material.dispose();
         chunks.delete(key);
     }
     const objects = chunkObjects.get(key);
     if (objects) {
         objects.waterMeshes.forEach((w: any) => { scene.remove(w); w.geometry.dispose(); w.material.dispose(); });
-        objects.trees.forEach((t: any) => { scene.remove(t); t.traverse((c: any) => { if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); }); });
+        
+        const dummy = new THREE.Object3D();
+        dummy.scale.set(0,0,0);
+        dummy.updateMatrix();
+        objects.treeIndices.forEach(index => {
+            freeTreeIndices.push(index);
+            instancedTreeTrunks.setMatrixAt(index, dummy.matrix);
+            instancedTreeFoliage.setMatrixAt(index, dummy.matrix);
+        });
+
         if (objects.house) { scene.remove(objects.house); objects.house.traverse((c: any) => { if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); }); }
         chunkObjects.delete(key);
     }
 }
 
-export function updateChunks(camera: any, chunks: Map<string, any>, chunkObjects: Map<string, any>, scene: any, airportLocation: Vector2D, runwayLen: number, THREE: any) {
+export function updateChunks(threeState: any, scene: any, airportLocation: Vector2D, runwayLen: number, THREE: any) {
+  const { camera, chunks } = threeState;
   const pos = new THREE.Vector3();
   camera.getWorldPosition(pos);
   const chunkX = Math.floor(pos.x / CHUNK_SIZE);
@@ -175,28 +244,41 @@ export function updateChunks(camera: any, chunks: Map<string, any>, chunkObjects
     for (let z = -RENDER_DISTANCE; z <= RENDER_DISTANCE; z++) {
       const cx = chunkX + x, cz = chunkZ + z;
       needed.add(`${cx},${cz}`);
-      createChunk(cx, cz, chunks, chunkObjects, scene, airportLocation, runwayLen, THREE);
+      createChunk(cx, cz, threeState, scene, airportLocation, runwayLen, THREE);
     }
   }
 
   for (const key of chunks.keys()) {
     if (!needed.has(key)) {
       const [cx, cz] = key.split(',').map(Number);
-      removeChunk(cx, cz, chunks, chunkObjects, scene);
+      // FIX: Passed THREE to removeChunk.
+      removeChunk(cx, cz, threeState, scene, THREE);
     }
   }
 }
 
 export function createPlane(THREE: any) {
-  const p = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.BoxGeometry(.3, .2, 1.2), new THREE.MeshStandardMaterial({ color: 0xe53935, flatShading: true }));
+ const p = new THREE.Group();
+
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(0.3, 0.3, 1.2),
+    new THREE.MeshStandardMaterial({ color: 0xe53935, flatShading: true })
+  );
   body.castShadow = true;
   p.add(body);
-  const nose = new THREE.Mesh(new THREE.ConeGeometry(.15, .3, 4), new THREE.MeshStandardMaterial({ color: 0xc62828, flatShading: true }));
-  nose.rotation.x = Math.PI / 2;
-  nose.position.z = -0.75;
+
+  // פירמידה שמתאימה לגוף המטוס
+  const nose = new THREE.Mesh(
+    new THREE.CylinderGeometry(0, 0.2135, 0.65, 4), // radiusTop=0, radiusBottom=0.15 (=0.3/2), height=0.6
+    new THREE.MeshStandardMaterial({ color: 0xe53935, flatShading: true })
+  );
+
+  nose.rotation.x = Math.PI * 1.5; // נשאר כמו בקוד שלך
+  nose.position.z = -0.92; // מצמיד לחרטום הגוף
+  nose.rotation.y = Math.PI / 4; // מיישר את הפאות לריבוע הגוף
   nose.castShadow = true;
   p.add(nose);
+
   const wing = new THREE.Mesh(new THREE.BoxGeometry(2.5, .05, .5), new THREE.MeshStandardMaterial({ color: 0xffeb3b, flatShading: true }));
   wing.position.z = 0.1;
   wing.castShadow = true;
@@ -210,7 +292,7 @@ export function createPlane(THREE: any) {
   stab.castShadow = true;
   p.add(stab);
   const prop = new THREE.Mesh(new THREE.BoxGeometry(.05, .8, .05), new THREE.MeshStandardMaterial({ color: 0x424242, flatShading: true }));
-  prop.position.z = -0.95;
+  prop.position.z = -1.25;
   prop.castShadow = true;
   p.add(prop);
   p.userData.prop = prop;
@@ -233,33 +315,22 @@ export function createPlane(THREE: any) {
 
 export function createAirport(x: number, z: number, THREE: any) {
   const airport = new THREE.Group();
-  const h = AIRPORT_HEIGHT + .3;
-  const foundationLen = 35 * 1.5;
-  const foundation = new THREE.Mesh(new THREE.BoxGeometry(8, .5, foundationLen), new THREE.MeshStandardMaterial({ color: 0x616161, flatShading: true }));
-  foundation.position.set(x, h - 0.25, z);
-  foundation.receiveShadow = true;
-  foundation.castShadow = true;
-  airport.add(foundation);
+  const h = AIRPORT_HEIGHT;
   const runwayLen = 30 * 1.5;
-  const runway = new THREE.Mesh(new THREE.BoxGeometry(5, .15, runwayLen), new THREE.MeshStandardMaterial({ color: 0x424242, flatShading: true }));
-  runway.position.set(x, h + 0.075, z);
-  runway.receiveShadow = true;
-  runway.castShadow = true;
-  airport.add(runway);
+
   airport.userData.runwayLen = runwayLen;
-  for (let i = -Math.floor((runwayLen / 2) - 3); i <= Math.floor((runwayLen / 2) - 3); i += 4) {
-      const mark = new THREE.Mesh(new THREE.BoxGeometry(.5, .18, 2), new THREE.MeshStandardMaterial({ color: 0xffffff, flatShading: true }));
-      mark.position.set(x, h + 0.16, z + i);
-      airport.add(mark);
-  }
+  
+  // Control Tower
   const base = new THREE.Mesh(new THREE.BoxGeometry(2, 3, 2), new THREE.MeshStandardMaterial({ color: 0xbdbdbd, flatShading: true }));
   base.position.set(x - 6, h + 1.5, z - (runwayLen / 2 - 3));
   base.castShadow = true;
   airport.add(base);
+
   const top = new THREE.Mesh(new THREE.BoxGeometry(2.5, 1, 2.5), new THREE.MeshStandardMaterial({ color: 0x2196f3, flatShading: true, transparent: true, opacity: .7 }));
-  top.position.set(x - 6, h + 3.5, z - (runwayLen / 2 - 3));
+  top.position.set(x - 6, h + 3.0 + 0.5, z - (runwayLen / 2 - 3));
   top.castShadow = true;
   airport.add(top);
+  
   airport.userData.position = { x, z };
   airport.userData.height = h;
   return airport;

@@ -1,9 +1,8 @@
+
 import type { Vector2D } from '../types';
 
 const AIRPORT_FLATTEN_RADIUS = 25;
-const AIRPORT_HEIGHT = 2.5;
-const RUNWAY_TOP_Y = AIRPORT_HEIGHT + 0.375;
-const PLANE_CLEARANCE = 0.01;
+export const AIRPORT_HEIGHT = 2.5;
 
 export function seededRandom(x: number, y: number, seed = 0): number {
   const n = Math.sin(x * 12.9898 + y * 78.233 + seed * 45.164) * 43758.5453;
@@ -39,15 +38,16 @@ export function fbm(x: number, y: number, oct = 4): number {
 
 export function getTerrainHeight(x: number, z: number, airportLocation: Vector2D): number {
   const d = Math.hypot(x - airportLocation.x, z - airportLocation.z);
+  const nat = fbm(x * .05, z * .05, 4) * 8 - 2;
+
   if (d < AIRPORT_FLATTEN_RADIUS) {
     if (d > AIRPORT_FLATTEN_RADIUS - 5) {
       const t = (d - (AIRPORT_FLATTEN_RADIUS - 5)) / 5;
-      const nat = fbm(x * .05, z * .05, 4) * 8 - 2;
-      return RUNWAY_TOP_Y - 0.375 * (1 - t) + nat * t;
+      return lerp(AIRPORT_HEIGHT, nat, t);
     }
     return AIRPORT_HEIGHT;
   }
-  return fbm(x * .05, z * .05, 4) * 8 - 2;
+  return nat;
 }
 
 export function isWater(x: number, z: number, airportLocation: Vector2D): boolean {
@@ -55,14 +55,7 @@ export function isWater(x: number, z: number, airportLocation: Vector2D): boolea
 }
 
 export function isOverRunwayXZ(x: number, z: number, airportLocation: Vector2D, runwayLen: number): boolean {
-  const halfW = 2.5 - 0.1; 
-  const halfL = runwayLen / 2 - 0.5;
+  const halfW = 2.5; 
+  const halfL = runwayLen / 2;
   return Math.abs(x - airportLocation.x) <= halfW && Math.abs(z - airportLocation.z) <= halfL;
-}
-
-export function clampToRunwayTopIfInside(plane: any, airportLocation: Vector2D, runwayLen: number, THREE: any): void {
-  if (isOverRunwayXZ(plane.position.x, plane.position.z, airportLocation, runwayLen)) {
-    const top = RUNWAY_TOP_Y + PLANE_CLEARANCE;
-    if (plane.position.y < top) plane.position.y = top;
-  }
 }

@@ -1,4 +1,3 @@
-
 import React from 'react';
 import type { HudData } from '../types';
 
@@ -11,7 +10,10 @@ const Hud: React.FC<HudData> = ({ speed, altitude, fuel, isGrounded, nearAirport
 
   const getAirportStatus = () => {
     if (isGrounded && nearAirport) {
-      return <div className="text-green-400 font-bold text-xs mt-1">Airport: R=Fuel</div>;
+      if (fuel < 100) {
+        return <div className="text-green-400 font-bold text-xs mt-1">Refueling...</div>;
+      }
+      return <div className="text-green-400 font-bold text-xs mt-1">Airport: Fueled</div>;
     }
     if (nearAirport) {
       return <div className="text-orange-400 font-bold text-xs mt-1">Near Airport</div>;

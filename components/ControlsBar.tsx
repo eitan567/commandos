@@ -1,4 +1,3 @@
-
 import React, { useRef, useState, useCallback } from 'react';
 import type { InputState } from '../types';
 
@@ -8,7 +7,6 @@ interface ControlsBarProps {
   isAutolandActive: boolean;
 }
 
-// FIX: Refactored touch event handlers to avoid type conflicts and improve robustness.
 const Joystick: React.FC<{ onMove: (delta: { x: number, y: number }) => void }> = ({ onMove }) => {
   const handleRef = useRef<HTMLDivElement>(null);
   const activeTouchId = useRef<number | null>(null);
@@ -26,30 +24,38 @@ const Joystick: React.FC<{ onMove: (delta: { x: number, y: number }) => void }> 
 
   const handleMove = (e: React.TouchEvent<HTMLDivElement>) => {
     e.preventDefault();
-    if (activeTouchId.current === null) return;
+    if (activeTouchId.current === null || !handleRef.current) return;
     
-    const touch = Array.from(e.changedTouches).find(t => t.identifier === activeTouchId.current);
-
-    if (touch && handleRef.current) {
-      const dx = touch.clientX - center.current.x;
-      const dy = touch.clientY - center.current.y;
-      const max = 35;
-      const dist = Math.hypot(dx, dy);
-      let x = dx, y = dy;
-      if (dist > max) {
-        x = (dx / dist) * max;
-        y = (dy / dist) * max;
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const touch = e.changedTouches[i];
+      if (touch.identifier === activeTouchId.current) {
+        const dx = touch.clientX - center.current.x;
+        const dy = touch.clientY - center.current.y;
+        const max = 35;
+        const dist = Math.hypot(dx, dy);
+        let x = dx, y = dy;
+        if (dist > max) {
+          x = (dx / dist) * max;
+          y = (dy / dist) * max;
+        }
+        handleRef.current.style.transform = `translate(calc(-50% + ${x}px), calc(-50% + ${y}px))`;
+        onMove({ x: x / max, y: y / max });
+        break; // Found the active touch, no need to continue
       }
-      handleRef.current.style.transform = `translate(calc(-50% + ${x}px), calc(-50% + ${y}px))`;
-      onMove({ x: x / max, y: y / max });
     }
   };
   
   const handleEnd = (e: React.TouchEvent<HTMLDivElement>) => {
     e.preventDefault();
-    const touchReleased = Array.from(e.changedTouches).some(
-      (touch) => touch.identifier === activeTouchId.current
-    );
+    if (activeTouchId.current === null) return;
+
+    let touchReleased = false;
+    for (let i = 0; i < e.changedTouches.length; i++) {
+        if (e.changedTouches[i].identifier === activeTouchId.current) {
+            touchReleased = true;
+            break;
+        }
+    }
     
     if(touchReleased && handleRef.current){
         activeTouchId.current = null;
@@ -81,13 +87,13 @@ const ControlsBar: React.FC<ControlsBarProps> = ({ onInputUpdate, onAutoLandClic
 
   const handleJoystickMove = useCallback((delta: { x: number, y: number }) => {
     joyDelta.current = delta;
-    onInputUpdate({ x: joyDelta.current.x, y: -joyDelta.current.y, throttle: (thrUp ? 1 : 0) - (thrDn ? 1 : 0) });
+    onInputUpdate({ x: joyDelta.current.x, y: joyDelta.current.y, throttle: (thrUp ? 1 : 0) - (thrDn ? 1 : 0) });
   }, [onInputUpdate, thrUp, thrDn]);
 
   const handleThrottleChange = useCallback((up: boolean, down: boolean) => {
     setThrUp(up);
     setThrDn(down);
-    onInputUpdate({ x: joyDelta.current.x, y: -joyDelta.current.y, throttle: (up ? 1 : 0) - (down ? 1 : 0) });
+    onInputUpdate({ x: joyDelta.current.x, y: joyDelta.current.y, throttle: (up ? 1 : 0) - (down ? 1 : 0) });
   }, [onInputUpdate]);
 
   const autoLandBtnClass = `w-16 h-16 leading-[64px] text-center font-sans font-extrabold text-2xl text-white rounded-full shadow-lg cursor-pointer backdrop-blur-sm transition-all duration-200 active:translate-y-px active:scale-95 ${
