@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useFlightSimulator } from './hooks/useFlightSimulator';
-import { HudData, CompassData, MessageData } from './types';
+import { HudData, CompassData, MessageData, ArrowData } from './types';
 import Hud from './components/Hud';
 import Compass from './components/Compass';
 import Message from './components/Message';
@@ -11,6 +11,7 @@ import UnitSelection from './components/UnitSelection';
 import PlaneSelection from './components/PlaneSelection';
 import SettingsScreen from './components/SettingsScreen';
 import PauseMenu from './components/PauseMenu';
+import DirectionalArrows from './components/DirectionalArrows';
 
 type GameState = 'main-menu' | 'unit-selection' | 'plane-selection' | 'settings' | 'in-game';
 export type PlayerTeam = 'red' | 'green';
@@ -20,6 +21,7 @@ const App: React.FC = () => {
   const [hudData, setHudData] = useState<HudData>({ speed: 0, altitude: 0, fuel: 100, isGrounded: true, nearAirport: true });
   const [compassData, setCompassData] = useState<CompassData>({ rotation: 0, distance: '0.0km' });
   const [message, setMessage] = useState<MessageData>({ text: '', visible: false });
+  const [arrowData, setArrowData] = useState<ArrowData[]>([]);
   const [isAutolandActive, setAutolandActive] = useState(false);
   const [isFogEnabled, setIsFogEnabled] = useState(true);
   const [isPaused, setIsPaused] = useState(false);
@@ -40,11 +42,12 @@ const App: React.FC = () => {
     };
   }, [gameState]);
 
-  const onStateUpdate = useCallback((data: { hud: HudData, compass: CompassData, message: MessageData, autoland: boolean }) => {
+  const onStateUpdate = useCallback((data: { hud: HudData, compass: CompassData, message: MessageData, autoland: boolean, arrows: ArrowData[] }) => {
     setHudData(data.hud);
     setCompassData(data.compass);
     setMessage(data.message);
     setAutolandActive(data.autoland);
+    setArrowData(data.arrows);
   }, []);
 
   const { handleInput, requestAutoLand } = useFlightSimulator(mountRef, onStateUpdate, isFogEnabled, gameState === 'in-game' && !isPaused);
@@ -92,6 +95,7 @@ const App: React.FC = () => {
             <Hud {...hudData} />
             <Compass {...compassData} />
             <Message text={message.text} visible={message.visible} />
+            <DirectionalArrows arrows={arrowData} />
             
             {/* The empty settings panel is now hidden but remains in the code */}
             {false && <SettingsPanel 

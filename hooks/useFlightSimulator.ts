@@ -2,13 +2,13 @@ import React, { useRef, useEffect, useCallback } from 'react';
 import type * as THREE from 'three';
 import { createScene, createPlane, createAirport, updateChunks, findAirportLocation } from '../utils/sceneSetup';
 import { getTerrainHeight, AIRPORT_HEIGHT } from '../utils/terrain';
-import type { PlaneState, HudData, CompassData, MessageData, InputState } from '../types';
+import type { PlaneState, HudData, CompassData, MessageData, InputState, ArrowData } from '../types';
 
 const PLANE_GROUND_CLEARANCE = 0.3; // Distance from plane center to bottom of wheels
 
 export const useFlightSimulator = (
   mountRef: React.RefObject<HTMLDivElement>,
-  onStateUpdate: (data: { hud: HudData, compass: CompassData, message: MessageData, autoland: boolean }) => void,
+  onStateUpdate: (data: { hud: HudData, compass: CompassData, message: MessageData, autoland: boolean, arrows: ArrowData[] }) => void,
   isFogEnabled: boolean,
   isActive: boolean
 ) => {
@@ -22,11 +22,16 @@ export const useFlightSimulator = (
     isGrounded: true, nearAirport: true,
     autoLanding: false, autoPhase: 'none', phaseTimer: 0,
     hasTakenOff: false, manualAutoLandRequested: false,
-    flightTicks: 0, lockedYaw: null
+    flightTicks: 0, lockedYaw: null,
+    landingDirection: null,
+    targetYaw: null,
+    // New state for rollout and effects
+    rolloutStartZ: null, rolloutInitialSpeed: null, targetStopZ: null, cameraShakeTimer: 0,
   });
   const inputRef = useRef<InputState>({ x: 0, y: 0, throttle: 0 });
   const keysRef = useRef<Record<string, boolean>>({});
   const gameStartTimeRef = useRef<number>(0);
+  const frameCounterRef = useRef<number>(0);
   const isDraggingForZoomRef = useRef<boolean>(false);
   const lastMouseXRef = useRef<number>(0);
 
@@ -113,6 +118,7 @@ export const useFlightSimulator = (
           compass: { rotation: 0, distance: '0.0km' },
           message: { text: '', visible: false },
           autoland: false,
+          arrows: [],
         },
         cameraViews: ['rear', 'left', 'right'],
         currentCameraViewIndex: 0,
@@ -332,8 +338,12 @@ export const useFlightSimulator = (
       }
 
       if (playerPlane.userData.prop) {
-        const normalizedSpeed = Math.max(0, (state.speed - state.minSpeed)) / (state.maxSpeed - state.minSpeed);
-        playerPlane.userData.prop.rotation.z += (normalizedSpeed * 1.0 + 0.1) * 75;
+        const engineOn = state.speed > 0.01 || (state.autoLanding && (state.autoPhase === 'rollout' || state.autoPhase === 'turnaround'));
+        if (engineOn) {
+          const normalizedSpeed = Math.max(0, (state.speed - state.minSpeed)) / (state.maxSpeed - state.minSpeed);
+          const spinRate = state.speed > 0.01 ? (normalizedSpeed * 1.0 + 0.1) * 75 : 10;
+          playerPlane.userData.prop.rotation.z += spinRate;
+        }
       }
 
       const { cameraViews, currentCameraViewIndex } = threeRef.current;
@@ -348,30 +358,43 @@ export const useFlightSimulator = (
 
       const camPos = camOffset.clone().applyQuaternion(playerPlane.quaternion);
       camera.position.copy(playerPlane.position).add(camPos);
+      
+      if (state.cameraShakeTimer > 0) {
+        const shakeAmount = (state.cameraShakeTimer / 30) * 0.08;
+        camera.position.x += (Math.random() - 0.5) * shakeAmount;
+        camera.position.y += (Math.random() - 0.5) * shakeAmount;
+        state.cameraShakeTimer--;
+      }
+      
       camera.lookAt(playerPlane.position);
       
       const runwayCenter = new THREE.Vector3(airportLocation.x, AIRPORT_HEIGHT + PLANE_GROUND_CLEARANCE, airportLocation.z);
-      const toRunway = new THREE.Vector2(runwayCenter.x - playerPlane.position.x, runwayCenter.z - playerPlane.position.z).normalize();
-      const dirPlusZ = new THREE.Vector2(0, 1), dirMinusZ = new THREE.Vector2(0, -1);
-      const landingDir2 = (toRunway.dot(dirPlusZ) >= toRunway.dot(dirMinusZ)) ? dirPlusZ : dirMinusZ;
-      const landingDir3 = new THREE.Vector3(0, 0, landingDir2.y);
-      
-      const approachPoint = new THREE.Vector3(runwayCenter.x, runwayCenter.y + 10, runwayCenter.z).add(landingDir3.clone().multiplyScalar(-50));
-      const touchdownPoint = new THREE.Vector3(runwayCenter.x, runwayCenter.y, runwayCenter.z).add(landingDir3.clone().multiplyScalar(-mainAirport.userData.runwayLen / 2 + 5));
 
-
+      // Calculate and store landing direction when autoland is requested
       if (!state.autoLanding && state.manualAutoLandRequested) {
-        state.autoLanding = true; state.autoPhase = 'intercept'; state.phaseTimer = 0; state.manualAutoLandRequested = false;
+        const toRunway = new THREE.Vector2(runwayCenter.x - playerPlane.position.x, runwayCenter.z - playerPlane.position.z).normalize();
+        const dirPlusZ = new THREE.Vector2(0, 1), dirMinusZ = new THREE.Vector2(0, -1);
+        const landingDir2 = (toRunway.dot(dirPlusZ) >= toRunway.dot(dirMinusZ)) ? dirPlusZ : dirMinusZ;
+        state.landingDirection = landingDir2.y;
+        
+        state.autoLanding = true;
+        state.autoPhase = 'intercept';
+        state.phaseTimer = 0;
+        state.manualAutoLandRequested = false;
         state.lockedYaw = null;
       }
       
       if(state.autoLanding) {
-        const desiredYaw = (landingDir2.y > 0) ? Math.PI : 0;
+        const landingDirY = state.landingDirection || 1;
+        const landingDir3 = new THREE.Vector3(0, 0, landingDirY);
+        const desiredYaw = (landingDirY > 0) ? Math.PI : 0;
+        const approachPoint = new THREE.Vector3(runwayCenter.x, runwayCenter.y + 10, runwayCenter.z).add(landingDir3.clone().multiplyScalar(-50));
+        const touchdownPoint = new THREE.Vector3(runwayCenter.x, runwayCenter.y, runwayCenter.z).add(landingDir3.clone().multiplyScalar(-mainAirport.userData.runwayLen / 2 + 5));
 
-        if (state.autoPhase !== 'rollout' && state.autoPhase !== 'turnaround' && state.autoPhase !== 'hold' && state.autoPhase !== 'done') {
+        if (state.autoPhase !== 'rollout' && state.autoPhase !== 'turnaround' && state.autoPhase !== 'hold') {
             const yawErr = ((desiredYaw - playerPlane.rotation.y + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
             playerPlane.rotation.y += yawErr * 0.06;
-        } else if (state.lockedYaw != null && state.autoPhase !== 'turnaround') {
+        } else if (state.autoPhase !== 'turnaround' && state.lockedYaw != null) {
             playerPlane.rotation.y = state.lockedYaw;
         }
 
@@ -428,37 +451,66 @@ export const useFlightSimulator = (
                     state.autoPhase = 'rollout';
                     state.phaseTimer = 0;
                     if (state.lockedYaw == null) state.lockedYaw = desiredYaw;
+                    
+                    state.rolloutInitialSpeed = state.speed;
+                    state.rolloutStartZ = playerPlane.position.z;
+                    state.targetStopZ = airportLocation.z + (landingDirY * (mainAirport.userData.runwayLen / 2 - 3));
+                    state.cameraShakeTimer = 30;
                 }
                 break;
             }
             case 'rollout': {
                 if (state.lockedYaw != null) playerPlane.rotation.y = state.lockedYaw;
-                const brk = Math.max(0, 0.10 - state.phaseTimer * 0.0012);
-                playerPlane.position.add(landingDir3.clone().multiplyScalar(brk));
-                state.speed = brk;
+                
+                if (state.rolloutStartZ !== null && state.targetStopZ !== null && state.rolloutInitialSpeed !== null) {
+                    const totalDistance = Math.abs(state.targetStopZ - state.rolloutStartZ);
+                    const distanceCovered = Math.abs(playerPlane.position.z - state.rolloutStartZ);
+                    const progress = Math.min(1, distanceCovered / totalDistance);
+                    
+                    state.speed = THREE.MathUtils.lerp(state.rolloutInitialSpeed, 0, progress);
+
+                    if (progress >= 0.99 || state.speed <= 0.001) {
+                        state.speed = 0;
+                        state.autoPhase = 'turnaround';
+                        state.phaseTimer = 0;
+                        state.rolloutInitialSpeed = null;
+                        state.rolloutStartZ = null;
+                        state.targetStopZ = null;
+                        if (state.lockedYaw !== null) {
+                           state.targetYaw = state.lockedYaw + Math.PI;
+                        }
+                    }
+                } else {
+                    state.speed = Math.max(0, state.speed - 0.001);
+                    if (state.speed === 0) {
+                        state.autoPhase = 'turnaround';
+                    }
+                }
+                
+                playerPlane.position.add(landingDir3.clone().multiplyScalar(state.speed));
                 playerPlane.position.y = AIRPORT_HEIGHT + PLANE_GROUND_CLEARANCE;
                 playerPlane.position.x += (airportLocation.x - playerPlane.position.x) * 0.04;
-                state.phaseTimer++;
-                const endRel = (playerPlane.position.z - airportLocation.z) * landingDir2.y;
-                if (endRel >= (mainAirport.userData.runwayLen / 2 - 2) || state.speed <= 0.01) {
-                    state.autoPhase = 'turnaround';
-                    state.phaseTimer = 0;
-                }
                 break;
             }
             case 'turnaround': {
-                const targetYaw = (state.lockedYaw || desiredYaw) + Math.PI;
-                const yawErr = ((targetYaw - playerPlane.rotation.y + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-                playerPlane.rotation.y += Math.sign(yawErr) * Math.min(Math.abs(yawErr), 0.06);
+                state.speed = 0;
                 playerPlane.position.y = AIRPORT_HEIGHT + PLANE_GROUND_CLEARANCE;
                 
-                if (Math.abs(yawErr) < 0.02 || state.phaseTimer > 3 * 60) {
-                    state.autoPhase = 'hold';
-                    state.phaseTimer = 0;
-                    state.lockedYaw = targetYaw;
-                    state.speed = 0;
+                if (state.targetYaw !== null) {
+                    const yawError = state.targetYaw - playerPlane.rotation.y;
+                    const normalizedYawError = ((yawError + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+            
+                    playerPlane.rotation.y += normalizedYawError * 0.02;
+            
+                    if (Math.abs(normalizedYawError) < 0.01) {
+                        playerPlane.rotation.y = state.targetYaw;
+                        state.lockedYaw = state.targetYaw;
+                        state.targetYaw = null;
+                        state.autoPhase = 'hold';
+                        state.phaseTimer = 0;
+                    }
                 } else {
-                    state.phaseTimer++;
+                    state.autoPhase = 'hold'; // Fallback
                 }
                 break;
             }
@@ -467,16 +519,13 @@ export const useFlightSimulator = (
                 playerPlane.position.y = AIRPORT_HEIGHT + PLANE_GROUND_CLEARANCE;
                 state.speed = 0;
                 state.phaseTimer++;
-                if (state.phaseTimer > 2 * 60) {
-                    state.autoPhase = 'done';
-                    showMessage('Control ready', 900);
+                if (state.phaseTimer > 1 * 60) {
+                    state.autoLanding = false;
+                    state.autoPhase = 'none';
+                    state.isGrounded = true;
+                    state.landingDirection = null;
+                    showMessage('Ready for takeoff', 1500);
                 }
-                break;
-            case 'done':
-                state.autoLanding = false;
-                state.isGrounded = true;
-                state.speed = 0;
-                if (state.lockedYaw != null) playerPlane.rotation.y = state.lockedYaw;
                 break;
         }
       }
@@ -504,11 +553,59 @@ export const useFlightSimulator = (
       
       const dx = airportLocation.x - playerPlane.position.x;
       const dz = airportLocation.z - playerPlane.position.z;
+
+      let newArrowData: ArrowData[] = [];
+      frameCounterRef.current++;
+
+      if (frameCounterRef.current % 2 === 0 && camera.projectionMatrix) {
+          const frustum = new THREE.Frustum();
+          frustum.setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse));
+
+          const targets = [{
+              id: 'airport',
+              position: runwayCenter,
+              color: 'orange',
+          }];
+
+          for (const target of targets) {
+              const onScreen = frustum.containsPoint(target.position);
+              if (onScreen) continue;
+
+              const distance = playerPlane.position.distanceTo(target.position);
+              const screenPos = target.position.clone().project(camera);
+              const posInCamera = target.position.clone().applyMatrix4(camera.matrixWorldInverse);
+
+              if (posInCamera.z > 0) {
+                  screenPos.x *= -1;
+                  screenPos.y *= -1;
+              }
+
+              const rotation = Math.atan2(screenPos.y, screenPos.x);
+              let { x: ndcX, y: ndcY } = screenPos;
+
+              const max = Math.max(Math.abs(ndcX), Math.abs(ndcY));
+              ndcX /= max;
+              ndcY /= max;
+
+              const PADDING_NDC = 0.05;
+              ndcX = Math.max(-1 + PADDING_NDC, Math.min(1 - PADDING_NDC, ndcX));
+              ndcY = Math.max(-1 + PADDING_NDC, Math.min(1 - PADDING_NDC, ndcY));
+
+              const screenX = (ndcX + 1) / 2 * window.innerWidth;
+              const screenY = (-ndcY + 1) / 2 * window.innerHeight;
+              
+              newArrowData.push({
+                  id: target.id, screenX, screenY, rotation, distance, color: target.color, onScreen
+              });
+          }
+      } else {
+        newArrowData = threeRef.current.lastState.arrows;
+      }
       
       const latestState = {
         hud: {
           speed: Math.round(state.speed * 200),
-          altitude: Math.round(currentAltitude * 10),
+          altitude: Math.round(Math.max(0, currentAltitude - PLANE_GROUND_CLEARANCE)),
           fuel: state.fuel,
           isGrounded: state.isGrounded,
           nearAirport: state.nearAirport
@@ -517,8 +614,9 @@ export const useFlightSimulator = (
           rotation: Math.atan2(dx, dz) - playerPlane.rotation.y + Math.PI,
           distance: (Math.hypot(dx, dz) / 10).toFixed(1) + 'km',
         },
-        message: { text: '', visible: false },
+        message: threeRef.current.lastState.message,
         autoland: state.autoLanding,
+        arrows: newArrowData,
       };
       
       onStateUpdate(latestState);

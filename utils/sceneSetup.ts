@@ -1,4 +1,3 @@
-
 import type { ChunkObjects, Vector2D } from '../types';
 import { getTerrainHeight, isWater, fbm, seededRandom, isOverRunwayXZ, AIRPORT_HEIGHT } from './terrain';
 
@@ -330,6 +329,43 @@ export function createAirport(x: number, z: number, THREE: any) {
   top.position.set(x - 6, h + 3.0 + 0.5, z - (runwayLen / 2 - 3));
   top.castShadow = true;
   airport.add(top);
+
+  // Runway Flags
+  const createFlag = (colorHex: number, THREE: any) => {
+    const flag = new THREE.Group();
+    const poleMat = new THREE.MeshStandardMaterial({ color: 0xcccccc, flatShading: true });
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 2, 6), poleMat);
+    pole.position.y = 1;
+    flag.add(pole);
+    
+    const flagMat = new THREE.MeshStandardMaterial({ color: colorHex, flatShading: true, side: THREE.DoubleSide });
+    const flagCloth = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.5), flagMat);
+    flagCloth.position.set(0.4, 1.7, 0);
+    flag.add(flagCloth);
+    
+    return flag;
+  };
+
+  const runwayWidthOffset = 3;
+  const runwayHalfLen = runwayLen / 2;
+
+  // Green flags at start
+  const greenFlag1 = createFlag(0x4caf50, THREE);
+  greenFlag1.position.set(x - runwayWidthOffset, h, z - runwayHalfLen);
+  airport.add(greenFlag1);
+
+  const greenFlag2 = createFlag(0x4caf50, THREE);
+  greenFlag2.position.set(x + runwayWidthOffset, h, z - runwayHalfLen);
+  airport.add(greenFlag2);
+
+  // Red flags at end
+  const redFlag1 = createFlag(0xf44336, THREE);
+  redFlag1.position.set(x - runwayWidthOffset, h, z + runwayHalfLen);
+  airport.add(redFlag1);
+
+  const redFlag2 = createFlag(0xf44336, THREE);
+  redFlag2.position.set(x + runwayWidthOffset, h, z + runwayHalfLen);
+  airport.add(redFlag2);
   
   airport.userData.position = { x, z };
   airport.userData.height = h;

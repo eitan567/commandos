@@ -39,7 +39,7 @@ const Joystick: React.FC<{ onMove: (delta: { x: number, y: number }) => void }> 
           y = (dy / dist) * max;
         }
         handleRef.current.style.transform = `translate(calc(-50% + ${x}px), calc(-50% + ${y}px))`;
-        onMove({ x: x / max, y: y / max });
+        onMove({ x: -(x / max), y: y / max });
         break; // Found the active touch, no need to continue
       }
     }

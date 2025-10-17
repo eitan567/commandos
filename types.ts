@@ -28,6 +28,13 @@ export interface PlaneState {
   manualAutoLandRequested: boolean;
   flightTicks: number;
   lockedYaw: number | null;
+  landingDirection: number | null;
+  targetYaw: number | null;
+  // State for new reliable rollout logic
+  rolloutStartZ: number | null;
+  rolloutInitialSpeed: number | null;
+  targetStopZ: number | null;
+  cameraShakeTimer: number;
 }
 
 export interface HudData {
@@ -58,4 +65,14 @@ export interface ChunkObjects {
   waterMeshes: THREE.Mesh[];
   treeIndices: number[];
   house: THREE.Group | null;
+}
+
+export interface ArrowData {
+  id: string;
+  screenX: number;
+  screenY: number;
+  rotation: number;
+  distance: number;
+  color: string;
+  onScreen: boolean;
 }
